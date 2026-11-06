@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chempack-handoff"
-version = "0.1.0"
+version = "0.2.0"
 description = "A small local chemistry file handoff utility with native GUI, verified copies and an offline index."
 readme = "README.md"
 requires-python = ">=3.11"

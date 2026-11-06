@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .core import Cancelled, build_package, create_demo, scan_folder, summary
+from .core import Cancelled, build_package, create_demo, load_assignments, scan_folder, summary
 
 
 def main():
@@ -48,28 +48,7 @@ def main():
             return
         scan = scan_folder(args.folder)
         if args.assign:
-            assignments = json.loads(args.assign.read_text(encoding="utf-8"))
-            if not isinstance(assignments, list):
-                raise ValueError("Назначения должны быть JSON-массивом.")
-            by_relative = {item.relative: item for item in scan.items}
-            seen = set()
-            for entry in assignments:
-                if not isinstance(entry, dict) or entry.get("relative") not in by_relative:
-                    raise ValueError("В назначениях указан неизвестный файл.")
-                if entry["relative"] in seen:
-                    raise ValueError("Повтор пути в назначениях.")
-                seen.add(entry["relative"])
-                item = by_relative[entry["relative"]]
-                for key in ("sample", "kind"):
-                    if key in entry:
-                        if not isinstance(entry[key], str) or len(entry[key]) > 80:
-                            raise ValueError(f"{key}: нужна строка длиной до 80 символов.")
-                        setattr(item, key, entry[key].strip())
-                if "include" in entry:
-                    if not isinstance(entry["include"], bool):
-                        raise ValueError("include должен быть true или false.")
-                    item.include = entry["include"]
-                item.warnings = ["Назначение из JSON пользователя"]
+            load_assignments(scan, args.assign)
         required = tuple(dict.fromkeys(v.strip() for v in args.require.split(",") if v.strip()))
         if args.command == "scan":
             result = {

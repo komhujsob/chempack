@@ -14,7 +14,15 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .core import KINDS, build_package, create_demo, scan_folder, summary
+from .core import (
+    KINDS,
+    build_package,
+    create_demo,
+    load_assignments,
+    save_assignments,
+    scan_folder,
+    summary,
+)
 
 
 class App:
@@ -80,14 +88,15 @@ class App:
         body.pack(fill="both", expand=True)
         ttk.Label(
             body,
-            text="Пакет материалов к статье или встрече — за пару кликов.",
+            text="Собери файлы по образцам и передай одним архивом",
             font=("Helvetica", 17, "bold"),
         ).pack(anchor="w")
-        ttk.Label(
+        self.step_label = ttk.Label(
             body,
-            text="Выбери папку с экспортами. Проверь назначения. Получи ZIP, каталог и реестр с SHA-256.",
+            text="Шаг 1 из 3 · Выбери папку или открой демо",
             style="Sub.TLabel",
-        ).pack(anchor="w", pady=(8, 18))
+        )
+        self.step_label.pack(anchor="w", pady=(8, 18))
         actions = ttk.Frame(body)
         actions.pack(fill="x")
         self.choose = ttk.Button(
@@ -134,21 +143,41 @@ class App:
         self.filter_box = ttk.Combobox(
             toolbar,
             textvariable=self.filter,
-            values=("Все файлы", "Без кода образца", "Совпадения содержимого", "Исключённые"),
+            values=(
+                "Все файлы",
+                "Требуют проверки",
+                "Без кода образца",
+                "Совпадения содержимого",
+                "Исключённые",
+            ),
             state="readonly",
             width=27,
         )
         self.filter_box.pack(side="left")
         self.filter_box.bind("<<ComboboxSelected>>", lambda _: self.refresh())
         self.edit_button = ttk.Button(
-            toolbar, text="Назначить / исключить…", command=self.edit_selected, state="disabled"
+            toolbar, text="Изменить выбранные…", command=self.edit_selected, state="disabled"
         )
         self.edit_button.pack(side="right")
+        review = ttk.Frame(body)
+        review.pack(fill="x", pady=(0, 10))
+        ttk.Label(review, text="Поиск:").pack(side="left")
+        self.search = tk.StringVar()
+        ttk.Entry(review, textvariable=self.search, width=24).pack(side="left", padx=(7, 12))
+        self.search.trace_add("write", lambda *_: self.refresh())
+        self.match_label = ttk.Label(review, text="", style="Sub.TLabel")
+        self.match_label.pack(side="left")
+        self.load_button = ttk.Button(review, text="Загрузить разметку…", command=self.load_review)
+        self.load_button.pack(side="right")
+        self.save_button = ttk.Button(review, text="Сохранить разметку…", command=self.save_review)
+        self.save_button.pack(side="right", padx=8)
+        self.load_button.state(["disabled"])
+        self.save_button.state(["disabled"])
         footer = ttk.Frame(body)
         footer.pack(side="bottom", fill="x")
         self.missing_label = ttk.Label(
             footer,
-            text="Подсказки по именам нужно проверить. Можно выделить несколько строк и назначить им один образец.",
+            text="В демо можно проверить весь процесс на семи учебных файлах.",
             style="Sub.TLabel",
             wraplength=1050,
         )
@@ -157,7 +186,7 @@ class App:
         bottom.pack(fill="x")
         self.build_button = ttk.Button(
             bottom,
-            text="② Собрать пакет…",
+            text="③ Собрать ZIP…",
             style="Accent.TButton",
             command=self.build,
             state="disabled",
@@ -187,7 +216,7 @@ class App:
             selectmode="extended",
         )
         for key, title, width in (
-            ("included", "✓", 35),
+            ("included", "В ZIP", 55),
             ("file", "Исходный файл", 360),
             ("sample", "Образец", 100),
             ("kind", "Тип", 90),
@@ -200,7 +229,12 @@ class App:
         self.table.configure(yscrollcommand=scroll.set)
         self.table.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
-        self.table.bind("<Double-1>", lambda _: self.edit_selected())
+        self.table.bind("<Double-1>", self.edit_row)
+        self.table.bind("<Return>", lambda _: self.edit_selected())
+        self.table.bind("<space>", self.toggle_selected)
+        self.table.bind("<<TreeviewSelect>>", lambda _: self.update_actions())
+        self.table.bind("<ButtonRelease-1>", self.toggle_cell)
+
         root.after(100, self.poll)
         root.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -228,8 +262,7 @@ class App:
         for button in (self.choose, self.try_demo):
             button.configure(state="disabled" if value else "normal")
         self.cancel_button.configure(state="normal" if value else "disabled")
-        self.build_button.configure(state="normal" if self.scan and not value else "disabled")
-        self.edit_button.configure(state="normal" if self.scan and not value else "disabled")
+        self.update_actions()
         self.require_entry.configure(state="disabled" if value else "normal")
         self.open_button.configure(state="normal" if self.package and not value else "disabled")
         self.folder_button.configure(state="normal" if self.package and not value else "disabled")
@@ -265,7 +298,10 @@ class App:
                     self.scan = result
                     self.package = None
                     self.set_busy(False)
+                    self.table.selection_remove(*self.table.selection())
                     self.filter.set("Все файлы")
+                    self.search.set("")
+                    self.step_label.configure(text="Шаг 2 из 3 · Проверь образцы и типы файлов")
                     self.path_label.configure(text=f"Источник: {result.root}")
                     self.status.configure(
                         text=f"Найдено {len(result.items)} файлов. Пропущено: {len(result.skipped)}. Проверь коды и типы перед сборкой."
@@ -274,6 +310,7 @@ class App:
                 elif action == "build":
                     self.package = result
                     self.set_busy(False)
+                    self.step_label.configure(text="Шаг 3 из 3 · Передай коллегам ChemPack.zip")
                     self.status.configure(
                         text=f"Готово: {result} · Для передачи команде: ChemPack.zip"
                     )
@@ -306,18 +343,31 @@ class App:
             text += f" Без кода образца: {stats['unassigned']}."
         if not stats["samples"]:
             text = "Назначь коды образцов, чтобы проверить комплектность."
-        self.missing_label.configure(text=text + " Типы — подсказки по именам, проверь их.")
+        self.missing_label.configure(
+            text=text + " Двойной щелчок — изменить. Щелчок в «В ZIP» — включить или исключить."
+        )
+        self.update_actions()
 
     def refresh(self):
+        selected = self.table.selection()
+        position = self.table.yview()[0]
         self.table.delete(*self.table.get_children())
         if not self.scan:
             return
         hashes = {}
         for item in self.scan.items:
             hashes[item.sha256] = hashes.get(item.sha256, 0) + 1
+        query = self.search.get().strip().casefold()
+        mode = self.filter.get()
         for index, item in enumerate(self.scan.items):
-            mode = self.filter.get()
+            if query and not any(
+                query in value.casefold() for value in (item.relative, item.sample, item.kind)
+            ):
+                continue
             duplicate = hashes[item.sha256] > 1
+            needs_review = not item.sample or item.kind in ("Проверить", "Другое") or duplicate
+            if mode == "Требуют проверки" and (not item.include or not needs_review):
+                continue
             if mode == "Без кода образца" and item.sample:
                 continue
             if mode == "Совпадения содержимого" and not duplicate:
@@ -327,7 +377,7 @@ class App:
             checks = []
             if not item.sample:
                 checks.append("Назначить образец")
-            if item.kind == "Проверить":
+            if item.kind in ("Проверить", "Другое"):
                 checks.append("Уточнить тип")
             if duplicate:
                 checks.append("Копия по SHA-256")
@@ -341,10 +391,80 @@ class App:
                     item.sample or "—",
                     item.kind,
                     f"{item.size / 1024:.1f} КБ",
-                    " · ".join(checks) or "Проверь назначение",
+                    " · ".join(checks) or "—",
                 ),
             )
+        visible = self.table.get_children()
+        self.table.selection_set([row for row in selected if self.table.exists(row)])
+        self.table.yview_moveto(position if selected else 0)
+        self.match_label.configure(text=f"{len(visible)} из {len(self.scan.items)} файлов")
         self.update_summary()
+
+    def update_actions(self):
+        ready = self.scan is not None and not self.busy
+        self.build_button.configure(
+            state="normal"
+            if ready and any(item.include for item in self.scan.items)
+            else "disabled"
+        )
+        self.edit_button.configure(
+            state="normal" if ready and self.table.selection() else "disabled"
+        )
+        for button in (self.load_button, self.save_button):
+            button.configure(state="normal" if ready else "disabled")
+
+    def edit_row(self, event):
+        row = self.table.identify_row(event.y)
+        if row and self.table.identify_region(event.x, event.y) == "cell":
+            if self.table.identify_column(event.x) != "#1":
+                self.edit_selected()
+
+    def toggle_cell(self, event):
+        row = self.table.identify_row(event.y)
+        if row and self.table.identify_column(event.x) == "#1":
+            self.toggle_rows((row,))
+
+    def toggle_selected(self, _event):
+        self.toggle_rows(self.table.selection())
+        return "break"
+
+    def toggle_rows(self, rows):
+        if self.busy or not self.scan or not rows:
+            return
+        items = [self.scan.items[int(row)] for row in rows]
+        include = not all(item.include for item in items)
+        for item in items:
+            item.include = include
+        self.refresh()
+
+    def save_review(self):
+        path = filedialog.asksaveasfilename(
+            parent=self.root,
+            defaultextension=".json",
+            initialfile="chempack-assignments.json",
+            filetypes=[("Разметка ChemPack", "*.json")],
+        )
+        if path:
+            try:
+                save_assignments(self.scan, Path(path))
+                self.status.configure(text=f"Разметка сохранена: {path}")
+            except OSError as exc:
+                messagebox.showerror("Не удалось сохранить разметку", str(exc), parent=self.root)
+
+    def load_review(self):
+        path = filedialog.askopenfilename(
+            parent=self.root,
+            filetypes=[("Разметка ChemPack", "*.json")],
+        )
+        if path:
+            try:
+                applied, skipped = load_assignments(self.scan, Path(path), allow_missing=True)
+                self.refresh()
+                self.status.configure(
+                    text=f"Применено: {applied}. Отсутствуют или изменились: {skipped}."
+                )
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("Не удалось загрузить разметку", str(exc), parent=self.root)
 
     def edit_selected(self):
         if self.busy or not self.scan:
@@ -380,13 +500,17 @@ class App:
             panel, textvariable=kind, values=("Не менять", *KINDS), state="readonly"
         )
         kind_box.pack(fill="x", pady=(7, 14))
-        include = tk.BooleanVar(value=all(i.include for i in items))
-        ttk.Checkbutton(panel, text="Включить выбранные файлы в пакет", variable=include).pack(
-            anchor="w"
-        )
+        include = tk.StringVar(value="Не менять")
+        ttk.Label(panel, text="Добавление в ZIP").pack(anchor="w")
+        ttk.Combobox(
+            panel,
+            textvariable=include,
+            values=("Не менять", "Включить", "Исключить"),
+            state="readonly",
+        ).pack(fill="x", pady=(7, 0))
         ttk.Label(
             panel,
-            text="Одинаковое содержимое не означает один образец.\nНазначения сохраняются только в новом пакете.",
+            text="Одинаковое содержимое не означает один образец.\nРазметку можно сохранить в JSON из главного окна.",
             style="Sub.TLabel",
         ).pack(anchor="w", pady=15)
 
@@ -398,7 +522,8 @@ class App:
             for item in items:
                 if change_sample.get():
                     item.sample = value
-                item.include = include.get()
+                if include.get() != "Не менять":
+                    item.include = include.get() == "Включить"
                 if kind.get() != "Не менять":
                     item.kind = kind.get()
                 item.warnings = ["Назначение проверено пользователем"]

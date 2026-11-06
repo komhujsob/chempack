@@ -19,6 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
+from . import __version__
+
 EXTENSIONS = {
     ".pdf",
     ".mnova",
@@ -256,6 +258,67 @@ def scan_folder(root: Path | str, progress=None, cancel=None) -> Scan:
     return Scan(root, items, skipped)
 
 
+def save_assignments(scan: Scan, path: Path):
+    entries = [
+        {
+            "relative": item.relative,
+            "sha256": item.sha256,
+            "sample": item.sample,
+            "kind": item.kind,
+            "include": item.include,
+        }
+        for item in scan.items
+    ]
+    path.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def load_assignments(scan: Scan, path: Path, *, allow_missing=False) -> tuple[int, int]:
+    entries = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(entries, list):
+        raise ValueError("Назначения должны быть JSON-массивом.")
+    by_relative = {item.relative: item for item in scan.items}
+    seen = set()
+    pending = []
+    skipped = 0
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("relative"), str):
+            raise ValueError("В каждой записи нужен относительный путь relative.")
+        relative = entry["relative"]
+        if relative in seen:
+            raise ValueError(f"Повтор пути в назначениях: {relative}")
+        seen.add(relative)
+        changes = {}
+        for key in ("sample", "kind"):
+            if key in entry:
+                value = entry[key]
+                if not isinstance(value, str) or len(value) > 80:
+                    raise ValueError(f"{key}: нужна строка длиной до 80 символов.")
+                changes[key] = value.strip()
+        if "include" in entry:
+            if not isinstance(entry["include"], bool):
+                raise ValueError("include должен быть true или false.")
+            changes["include"] = entry["include"]
+        if "sha256" in entry and (
+            not isinstance(entry["sha256"], str)
+            or not re.fullmatch("[0-9a-f]{64}", entry["sha256"])
+        ):
+            raise ValueError(f"Некорректная контрольная сумма: {relative}")
+        item = by_relative.get(relative)
+        if item is None or entry.get("sha256", item.sha256) != item.sha256:
+            if not allow_missing:
+                raise ValueError(f"Файл отсутствует или изменился: {relative}")
+            skipped += 1
+            continue
+        if changes:
+            pending.append((item, changes))
+    for item, changes in pending:
+        for key, value in changes.items():
+            setattr(item, key, value)
+        if "sample" in changes or "kind" in changes:
+            item.warnings = ["Назначение из JSON пользователя"]
+    return len(pending), skipped
+
+
 def summary(scan: Scan, required=("1H", "13C")) -> dict:
     selected = [item for item in scan.items if item.include]
     samples = defaultdict(list)
@@ -461,7 +524,7 @@ def build_package(
             packaged.append(record)
         manifest = {
             "schema_version": 1,
-            "tool": "ChemPack 0.1.0",
+            "tool": f"ChemPack {__version__}",
             "created_utc": datetime.now(UTC).isoformat(),
             "summary": summary(scan, required),
             "files": packaged,
