@@ -109,6 +109,9 @@ class App:
             actions, text="Отмена", command=self.cancel.set, state="disabled"
         )
         self.cancel_button.pack(side="right")
+        ttk.Button(actions, text="Как пользоваться", command=self.show_help).pack(
+            side="right", padx=8
+        )
         self.path_label = ttk.Label(
             body, text="Файлы ещё не выбраны.", style="Sub.TLabel", wraplength=1050
         )
@@ -237,6 +240,20 @@ class App:
 
         root.after(100, self.poll)
         root.protocol("WM_DELETE_WINDOW", self.close)
+
+    def show_help(self):
+        messagebox.showinfo(
+            "Как пользоваться ChemPack",
+            "1. Выбери папку с материалами или нажми «Попробовать демо».\n\n"
+            "2. Проверь столбцы «Образец» и «Тип». Фильтр «Требуют проверки» "
+            "покажет неясные назначения и копии. Двойной щелчок открывает редактор. "
+            "Щелчок в колонке «В ZIP» включает или исключает файл.\n\n"
+            "3. Нажми «Собрать ZIP» и выбери папку назначения. Коллегам передай "
+            "ChemPack.zip. После распаковки они смогут открыть index.html.\n\n"
+            "Для повторной сборки используй «Сохранить разметку» и "
+            "«Загрузить разметку».",
+            parent=self.root,
+        )
 
     def required_types(self):
         return tuple(dict.fromkeys(v.strip() for v in self.required.get().split(",") if v.strip()))
